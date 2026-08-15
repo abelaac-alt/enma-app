@@ -70,16 +70,29 @@ export function resolveCycleMode(periods = [], settings = {}) {
 export function getNextPeriod(periods = [], settings = {}, today = new Date()) {
   const sorted = normalizePeriods(periods);
   if (!sorted.length) return null;
+
   const last = parseDate(sorted.at(-1).start_date);
   const cycleDays = estimatedCycleLength(sorted, settings.default_cycle_length || 28);
-  const predicted = addDays(last, cycleDays);
-  const daysRemaining = daysBetween(today, predicted);
+
+  // La próxima fecha siempre debe ser futura (o hoy). Si la primera
+  // estimación desde el último registro ya pasó, avanzamos ciclos completos
+  // usando la media del historial reciente hasta encontrar la siguiente.
+  let predicted = addDays(last, cycleDays);
+  let projectedCycles = 1;
+  let guard = 0;
+  while (daysBetween(today, predicted) < 0 && guard < 60) {
+    predicted = addDays(predicted, cycleDays);
+    projectedCycles += 1;
+    guard += 1;
+  }
+
+  const daysRemaining = Math.max(0, daysBetween(today, predicted));
   return {
     date: toISODate(predicted),
     dateObject: predicted,
     daysRemaining,
     cycleDays,
-    overdueDays: daysRemaining < 0 ? Math.abs(daysRemaining) : 0
+    projectedCycles
   };
 }
 
@@ -115,16 +128,6 @@ export function getIrregularities(periods = [], settings = {}, today = new Date(
       });
     }
   });
-
-  const next = getNextPeriod(sorted, settings, today);
-  if (next && next.overdueDays > 7) {
-    issues.push({
-      type: 'late-estimate',
-      severity: 'attention',
-      message: `Han pasado ${next.overdueDays} días desde la fecha estimada. La predicción puede variar y no confirma por sí sola ninguna alteración.`,
-      key: 'late-estimate'
-    });
-  }
 
   return dedupe(issues).slice(0, 8);
 }

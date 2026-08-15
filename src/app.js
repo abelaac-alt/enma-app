@@ -306,14 +306,14 @@ function renderDashboard(partnerMode) {
   const avg = estimatedCycleLength(state.periods, state.settings?.default_cycle_length || 28);
   const irregularities = getIrregularities(state.periods, state.settings || {});
   const titleName = partnerMode ? state.partnerProfile?.full_name || 'tu pareja' : state.profile.full_name;
-  const countdownText = next ? (next.daysRemaining >= 0 ? `${next.daysRemaining}` : `${next.overdueDays}`) : '—';
-  const countdownLabel = !next ? 'sin datos' : next.daysRemaining > 1 ? 'días' : next.daysRemaining === 1 ? 'día' : next.daysRemaining === 0 ? 'hoy' : next.overdueDays === 1 ? 'día de retraso estimado' : 'días de retraso estimado';
+  const countdownText = next ? `${Math.max(0, next.daysRemaining)}` : '—';
+  const countdownLabel = !next ? 'sin datos' : next.daysRemaining === 0 ? 'el periodo se estima para hoy' : next.daysRemaining === 1 ? 'día para el próximo periodo' : 'días para el próximo periodo';
   const nextDate = next ? formatDateEs(next.date) : 'Añade un periodo para comenzar';
 
   return `
     <section class="hero-card">
       <div class="hero-content">
-        <div class="eyebrow">${partnerMode ? `Ciclo de ${escapeHtml(titleName)}` : 'Próxima regla estimada'}</div>
+        <div class="eyebrow">${partnerMode ? `Ciclo de ${escapeHtml(titleName)}` : 'Próximo periodo estimado'}</div>
         <div class="countdown-row"><strong>${countdownText}</strong><span>${countdownLabel}</span></div>
         <div class="hero-date">${nextDate}</div>
         <div class="hero-tags">
@@ -685,9 +685,9 @@ async function syncWidget() {
   await updateAndroidWidget({
     title: 'Enma',
     personName,
-    daysRemaining: next ? String(next.daysRemaining >= 0 ? next.daysRemaining : next.overdueDays) : '—',
+    daysRemaining: next ? String(Math.max(0, next.daysRemaining)) : '—',
     nextDate: next ? formatDateEs(next.date,{short:true}) : 'Sin datos',
-    status: next ? (next.daysRemaining < 0 ? 'Sobre la estimación' : next.daysRemaining === 0 ? 'Estimación: hoy' : 'Próxima regla') : 'Sin registros'
+    status: next ? (next.daysRemaining === 0 ? 'Periodo estimado: hoy' : 'Próximo periodo') : 'Sin registros'
   });
 }
 
