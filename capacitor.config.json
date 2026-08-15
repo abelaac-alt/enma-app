@@ -1,0 +1,8 @@
+{
+  "appId": "com.enma.cycle",
+  "appName": "Enma",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}
