@@ -205,7 +205,7 @@ begin
 
   loop
     attempts := attempts + 1;
-    generated := upper(substr(encode(gen_random_bytes(8), 'hex'), 1, 6));
+    generated := upper(substr(md5(random()::text || clock_timestamp()::text || auth.uid()::text), 1, 6));
     begin
       insert into public.pairing_codes(woman_id, code, expires_at)
       values (auth.uid(), generated, now() + interval '24 hours');

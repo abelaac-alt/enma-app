@@ -35,6 +35,8 @@ import { isNativeAndroid, updateAndroidWidget, requestPinAndroidWidget } from '.
 const root = document.querySelector('#app');
 const monthNames = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const weekdays = ['L','M','X','J','V','S','D'];
+const REMEMBER_KEY = 'enma.rememberSession';
+const SESSION_TAB_KEY = 'enma.sessionActive';
 
 const state = {
   session: null,
@@ -52,11 +54,11 @@ const state = {
   loading: false,
   message: null,
   modal: null,
-  pairCode: null
+  pairCode: null,
+  rememberSession: readRememberPreference()
 };
 
 boot();
-
 document.addEventListener('click', handleClick);
 document.addEventListener('submit', handleSubmit);
 
@@ -66,9 +68,22 @@ async function boot() {
     render();
     return;
   }
+
   const { data } = await getSession();
-  state.session = data.session;
-  if (state.session) await loadData();
+  const remembered = readRememberPreference();
+  state.rememberSession = remembered;
+
+  if (data.session && !remembered && sessionStorage.getItem(SESSION_TAB_KEY) !== '1') {
+    await signOut();
+    state.session = null;
+  } else {
+    state.session = data.session;
+    if (state.session) {
+      if (!remembered) sessionStorage.setItem(SESSION_TAB_KEY, '1');
+      await loadData();
+    }
+  }
+
   render();
 
   supabase.auth.onAuthStateChange(async (_event, session) => {
@@ -140,11 +155,11 @@ function render() {
   const role = state.profile.role;
   const content = role === 'woman' ? renderWomanView() : renderManView();
   root.innerHTML = `
-    <main class="shell">
-      <div class="container">
+    <main class="app-shell">
+      <div class="app-container">
         ${renderTopbar()}
         ${renderMessage()}
-        ${state.loading ? '<div class="notice">Actualizando información…</div>' : ''}
+        ${state.loading ? '<div class="status-banner">Actualizando información…</div>' : ''}
         ${content}
       </div>
     </main>
@@ -155,24 +170,30 @@ function render() {
 
 function renderSetup() {
   root.innerHTML = `
-    <main class="shell">
-      <section class="card setup">
-        <div class="brand"><div class="brand-mark">E</div><div><div class="brand-name">Enma</div><div class="brand-sub">Configuración inicial</div></div></div>
-        <h2 style="margin-top:28px">Conecta la base de datos segura</h2>
-        <p>El código de Enma está listo, pero para crear cuentas y sincronizar una pareja necesita un proyecto Supabase propio.</p>
-        <div class="notice">
-          1. Crea un proyecto en Supabase.<br>
-          2. Ejecuta <code>supabase/schema.sql</code> en el SQL Editor.<br>
-          3. Define <code>VITE_SUPABASE_URL</code> y <code>VITE_SUPABASE_ANON_KEY</code> en GitHub Actions o en tu archivo <code>.env</code>.<br>
-          4. Vuelve a compilar la web/APK.
+    <main class="auth-wrap">
+      <section class="auth-card setup-card">
+        ${renderBrand('Configuración inicial')}
+        <h1>Conecta Enma con Supabase</h1>
+        <p class="muted">La aplicación está lista. Solo necesita tu proyecto de Supabase para sincronizar cuentas, periodos y pareja.</p>
+        <div class="notice compact-list">
+          <span>1. Ejecuta <code>supabase/schema.sql</code>.</span>
+          <span>2. Añade <code>VITE_SUPABASE_URL</code>.</span>
+          <span>3. Añade <code>VITE_SUPABASE_ANON_KEY</code>.</span>
+          <span>4. Vuelve a compilar la web o el APK.</span>
         </div>
-        <p class="small muted" style="margin-top:16px">La clave anon de Supabase está diseñada para usarse en clientes; la protección real de los datos se aplica con Row Level Security incluida en este proyecto.</p>
       </section>
     </main>`;
 }
 
 function renderLoading() {
-  root.innerHTML = `<div class="auth-wrap"><div class="auth-card"><div class="auth-brand"><div class="brand-mark">E</div><div class="brand-name">Enma</div></div><div class="notice">Cargando tu espacio…</div></div></div>`;
+  root.innerHTML = `
+    <main class="auth-wrap">
+      <section class="auth-card loading-card">
+        ${renderBrand('Tu espacio personal')}
+        <div class="loader-line"><span></span></div>
+        <p class="muted small">Cargando tus datos…</p>
+      </section>
+    </main>`;
 }
 
 function renderAuth() {
@@ -180,43 +201,90 @@ function renderAuth() {
   root.innerHTML = `
     <main class="auth-wrap">
       <section class="auth-card">
-        <div class="auth-brand"><div class="brand-mark">E</div><div class="brand-name">Enma</div><p class="muted small">Tu ciclo, más claro. A tu ritmo.</p></div>
-        <div class="auth-tabs">
+        <div class="auth-heading">
+          ${renderBrand('Tu ciclo, más claro')}
+          <h1>${signup ? 'Crea tu espacio' : 'Bienvenida a Enma'}</h1>
+          <p class="muted">${signup ? 'Configura tu cuenta en menos de un minuto.' : 'Accede a tu calendario y seguimiento.'}</p>
+        </div>
+
+        <div class="auth-tabs" role="tablist">
           <button data-action="auth-mode" data-mode="login" class="${!signup ? 'active' : ''}">Entrar</button>
           <button data-action="auth-mode" data-mode="signup" class="${signup ? 'active' : ''}">Crear cuenta</button>
         </div>
+
         ${renderMessage()}
-        <form data-form="auth">
+
+        <form data-form="auth" class="auth-form">
           ${signup ? `
-            <div class="field"><label>Nombre</label><input name="fullName" autocomplete="name" required maxlength="60" placeholder="Tu nombre" /></div>
-            <div class="field"><label>Tipo de usuario</label></div>
-            <div class="role-cards">
-              <button type="button" class="role-card ${state.authRole === 'woman' ? 'active' : ''}" data-action="role" data-role="woman"><strong>Mujer</strong><span>Control completo del ciclo</span></button>
-              <button type="button" class="role-card ${state.authRole === 'man' ? 'active' : ''}" data-action="role" data-role="man"><strong>Hombre</strong><span>Vista de pareja autorizada</span></button>
+            <div class="field">
+              <label>Nombre</label>
+              <input name="fullName" autocomplete="name" required maxlength="60" placeholder="Tu nombre" />
+            </div>
+            <div class="field">
+              <label>Tipo de cuenta</label>
+              <div class="role-cards">
+                <button type="button" class="role-card ${state.authRole === 'woman' ? 'active' : ''}" data-action="role" data-role="woman">
+                  <span class="role-symbol">♀</span><span><strong>Mujer</strong><small>Control completo del ciclo</small></span>
+                </button>
+                <button type="button" class="role-card ${state.authRole === 'man' ? 'active' : ''}" data-action="role" data-role="man">
+                  <span class="role-symbol">♡</span><span><strong>Pareja</strong><small>Vista autorizada en lectura</small></span>
+                </button>
+              </div>
             </div>` : ''}
-          <div class="field"><label>Email</label><input name="email" type="email" autocomplete="email" required placeholder="nombre@correo.com" /></div>
-          <div class="field"><label>Contraseña</label><input name="password" type="password" autocomplete="${signup ? 'new-password' : 'current-password'}" minlength="8" required placeholder="Mínimo 8 caracteres" /></div>
-          <button class="primary-btn" type="submit">${signup ? 'Crear mi cuenta' : 'Entrar en Enma'}</button>
+
+          <div class="field">
+            <label>Email</label>
+            <input name="email" type="email" autocomplete="email" required placeholder="nombre@correo.com" />
+          </div>
+          <div class="field">
+            <label>Contraseña</label>
+            <input name="password" type="password" autocomplete="${signup ? 'new-password' : 'current-password'}" minlength="8" required placeholder="Mínimo 8 caracteres" />
+          </div>
+
+          ${!signup ? `
+            <label class="remember-row">
+              <input type="checkbox" name="remember" ${state.rememberSession ? 'checked' : ''} />
+              <span><strong>Mantener sesión iniciada</strong><small>No tendrás que volver a identificarte al cerrar Enma.</small></span>
+            </label>` : ''}
+
+          <button class="primary-btn large" type="submit">${signup ? 'Crear mi cuenta' : 'Entrar en Enma'}</button>
         </form>
-        <p class="small muted" style="margin-top:16px">Las fechas de Enma son estimaciones basadas en los registros introducidos. No deben usarse como método anticonceptivo ni como diagnóstico médico.</p>
+
+        <p class="legal-note">Enma ofrece estimaciones orientativas basadas en los registros introducidos. No sustituye asesoramiento sanitario ni debe usarse como método anticonceptivo.</p>
       </section>
     </main>`;
 }
 
+function renderBrand(subtitle = '') {
+  return `<div class="brand"><div class="brand-mark">E</div><div><div class="brand-name">Enma</div>${subtitle ? `<div class="brand-sub">${escapeHtml(subtitle)}</div>` : ''}</div></div>`;
+}
+
 function renderTopbar() {
   const name = state.profile?.full_name || '';
+  const firstName = name.trim().split(/\s+/)[0] || 'Enma';
   return `
     <header class="topbar">
-      <div class="brand"><div class="brand-mark">E</div><div><div class="brand-name">Enma</div><div class="brand-sub">${escapeHtml(name)}</div></div></div>
-      <button class="ghost-btn" data-action="logout">Salir</button>
+      <div class="topbar-copy">
+        <div class="mobile-brand">${renderBrand('')}</div>
+        <div>
+          <p class="topbar-kicker">${state.profile?.role === 'woman' ? 'Tu espacio personal' : 'Vista de pareja'}</p>
+          <h1>Hola, ${escapeHtml(firstName)}</h1>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span class="profile-chip"><span class="avatar">${escapeHtml(firstName.charAt(0).toUpperCase())}</span><span>${state.profile?.role === 'woman' ? 'Mujer' : 'Pareja'}</span></span>
+        <button class="icon-btn subtle" aria-label="Cerrar sesión" title="Cerrar sesión" data-action="logout">${icon('logout')}</button>
+      </div>
     </header>`;
 }
 
 function renderNav(role) {
   const items = role === 'woman'
-    ? [['home','Inicio'],['calendar','Calendario'],['record','Registrar'],['profile','Perfil']]
-    : [['home','Resumen'],['calendar','Calendario'],['profile','Pareja']];
-  return `<nav class="nav" style="grid-template-columns:repeat(${items.length},1fr)">${items.map(([key,label]) => `<button class="${state.view === key ? 'active' : ''}" data-action="view" data-view="${key}">${label}</button>`).join('')}</nav>`;
+    ? [['home','Inicio','home'],['calendar','Calendario','calendar'],['record','Registrar','plus'],['profile','Perfil','user']]
+    : [['home','Resumen','home'],['calendar','Calendario','calendar'],['profile','Pareja','heart']];
+  return `<nav class="bottom-nav" aria-label="Navegación principal" style="--nav-items:${items.length}">
+    ${items.map(([key,label,ico]) => `<button class="${state.view === key ? 'active' : ''}" data-action="view" data-view="${key}">${icon(ico)}<span>${label}</span></button>`).join('')}
+  </nav>`;
 }
 
 function renderWomanView() {
@@ -239,41 +307,49 @@ function renderDashboard(partnerMode) {
   const irregularities = getIrregularities(state.periods, state.settings || {});
   const titleName = partnerMode ? state.partnerProfile?.full_name || 'tu pareja' : state.profile.full_name;
   const countdownText = next ? (next.daysRemaining >= 0 ? `${next.daysRemaining}` : `${next.overdueDays}`) : '—';
-  const countdownLabel = !next ? 'Sin datos' : next.daysRemaining > 1 ? 'días' : next.daysRemaining === 1 ? 'día' : next.daysRemaining === 0 ? 'hoy' : next.overdueDays === 1 ? 'día sobre la estimación' : 'días sobre la estimación';
+  const countdownLabel = !next ? 'sin datos' : next.daysRemaining > 1 ? 'días' : next.daysRemaining === 1 ? 'día' : next.daysRemaining === 0 ? 'hoy' : next.overdueDays === 1 ? 'día de retraso estimado' : 'días de retraso estimado';
+  const nextDate = next ? formatDateEs(next.date) : 'Añade un periodo para comenzar';
 
   return `
-    <section class="grid two">
-      <article class="card hero">
-        <div>
-          <div class="eyebrow">${partnerMode ? `Ciclo de ${escapeHtml(titleName)}` : 'Próxima regla estimada'}</div>
-          <div class="countdown">${countdownText} <small>${countdownLabel}</small></div>
-          <div class="hero-date">${next ? `Fecha estimada: ${formatDateEs(next.date)}` : 'Registra al menos un periodo para empezar a estimar.'}</div>
+    <section class="hero-card">
+      <div class="hero-content">
+        <div class="eyebrow">${partnerMode ? `Ciclo de ${escapeHtml(titleName)}` : 'Próxima regla estimada'}</div>
+        <div class="countdown-row"><strong>${countdownText}</strong><span>${countdownLabel}</span></div>
+        <div class="hero-date">${nextDate}</div>
+        <div class="hero-tags">
+          <span>${icon('activity')} Ciclo ${modeLabel(mode).toLowerCase()}</span>
+          <span>${icon('clock')} Media ${avg} días</span>
         </div>
-        <div class="hero-row">
-          <span class="pill">Ciclo: ${modeLabel(mode)}</span>
-          <span class="pill">Media: ${avg} días</span>
-          ${partnerMode && isNativeAndroid() ? '<button class="pill" style="border:0;color:#fff" data-action="pin-widget">＋ Widget</button>' : ''}
-          ${!partnerMode ? '<button class="pill" style="border:0;color:#fff" data-action="open-period">＋ Registrar periodo</button>' : ''}
-        </div>
-      </article>
-      <article class="card">
-        <div class="eyebrow" style="color:var(--muted)">Resumen</div>
-        <div class="grid three" style="margin-top:18px">
-          <div class="metric"><strong>${avg}</strong><span>días de ciclo estimado</span></div>
-          <div class="metric"><strong>${state.settings?.typical_period_days || 5}</strong><span>días de periodo configurados</span></div>
-          <div class="metric"><strong>${state.periods.length}</strong><span>periodos registrados</span></div>
-        </div>
-        <div class="notice" style="margin-top:20px">Enma aprende de los últimos ciclos registrados. Cuantos más datos haya, más personalizada será la estimación.</div>
-      </article>
+      </div>
+      <div class="hero-orb"><span>${next ? String(new Date(next.date + 'T12:00:00').getDate()).padStart(2,'0') : '—'}</span><small>${next ? monthNames[new Date(next.date + 'T12:00:00').getMonth()].slice(0,3) : 'fecha'}</small></div>
     </section>
 
-    <div class="section-title"><div><h2>Este mes</h2><p>Registrado y estimado</p></div><button class="ghost-btn" data-action="view" data-view="calendar">Ver año</button></div>
-    <section class="grid two">
+    <section class="quick-grid">
+      ${!partnerMode ? `<button class="quick-action" data-action="open-period"><span class="quick-icon">${icon('plus')}</span><span><strong>Registrar periodo</strong><small>Añadir nuevas fechas</small></span></button>` : ''}
+      <button class="quick-action" data-action="view" data-view="calendar"><span class="quick-icon">${icon('calendar')}</span><span><strong>Calendario anual</strong><small>Ver previsiones</small></span></button>
+      ${partnerMode && isNativeAndroid() ? `<button class="quick-action" data-action="pin-widget"><span class="quick-icon">${icon('widget')}</span><span><strong>Añadir widget</strong><small>Formato compacto 3×1</small></span></button>` : ''}
+      <button class="quick-action" data-action="view" data-view="profile"><span class="quick-icon">${icon('settings')}</span><span><strong>${partnerMode ? 'Pareja' : 'Ajustes'}</strong><small>${partnerMode ? 'Gestionar vinculación' : 'Personalizar el ciclo'}</small></span></button>
+    </section>
+
+    <section class="stats-grid">
+      <article class="stat-card"><span class="stat-icon">${icon('activity')}</span><div><strong>${avg}</strong><span>Días de ciclo</span></div></article>
+      <article class="stat-card"><span class="stat-icon">${icon('droplet')}</span><div><strong>${state.settings?.typical_period_days || 5}</strong><span>Días de periodo</span></div></article>
+      <article class="stat-card"><span class="stat-icon">${icon('history')}</span><div><strong>${state.periods.length}</strong><span>Registros</span></div></article>
+    </section>
+
+    <div class="section-title">
+      <div><p class="section-kicker">Vista rápida</p><h2>Este mes</h2></div>
+      <button class="text-btn" data-action="view" data-view="calendar">Ver calendario ${icon('arrow')}</button>
+    </div>
+
+    <section class="content-grid">
       ${renderMonthCard(new Date().getFullYear(), new Date().getMonth())}
-      <article class="card">
-        <h3>Irregularidades y cambios</h3>
-        ${irregularities.length ? `<div class="list">${irregularities.map(i => `<div class="notice ${i.severity === 'attention' ? 'attention' : ''}">${escapeHtml(i.message)}</div>`).join('')}</div>` : '<div class="empty">No hay variaciones destacadas según tus registros recientes.</div>'}
-        <p class="small muted" style="margin:14px 0 0">Estas alertas comparan tus propios registros y no sustituyen una valoración sanitaria.</p>
+      <article class="card insights-card">
+        <div class="card-title-row"><div><p class="section-kicker">Seguimiento</p><h3>Irregularidades y cambios</h3></div><span class="soft-badge">${irregularities.length || 0}</span></div>
+        ${irregularities.length
+          ? `<div class="insight-list">${irregularities.map(i => `<div class="insight ${i.severity === 'attention' ? 'attention' : ''}"><span>${icon(i.severity === 'attention' ? 'alert' : 'check')}</span><p>${escapeHtml(i.message)}</p></div>`).join('')}</div>`
+          : `<div class="empty-state"><span class="empty-icon">${icon('check')}</span><strong>Sin cambios destacados</strong><p>Tus registros recientes no muestran variaciones relevantes.</p></div>`}
+        <p class="foot-note">Estas alertas comparan tus propios registros y no sustituyen una valoración sanitaria.</p>
       </article>
     </section>`;
 }
@@ -282,85 +358,129 @@ function renderCalendarPage(partnerMode) {
   const label = partnerMode ? `Calendario de ${escapeHtml(state.partnerProfile?.full_name || 'tu pareja')}` : 'Tu calendario';
   const months = yearMonths(state.yearView, state.periods, state.settings || {});
   return `
-    <div class="section-title"><div><h2>${label}</h2><p>Periodos registrados y previsiones</p></div>
-      <div class="actions"><button class="icon-btn" data-action="year-prev">←</button><button class="ghost-btn">${state.yearView}</button><button class="icon-btn" data-action="year-next">→</button></div>
+    <div class="page-heading">
+      <div><p class="section-kicker">Previsión anual</p><h2>${label}</h2><p>Periodos registrados y fechas estimadas.</p></div>
+      <div class="segmented-control"><button class="icon-btn" data-action="year-prev" aria-label="Año anterior">${icon('chevron-left')}</button><span>${state.yearView}</span><button class="icon-btn" data-action="year-next" aria-label="Año siguiente">${icon('chevron-right')}</button></div>
     </div>
-    <article class="card">
-      <div class="year-grid">
-        ${months.map(({ month, cells }) => renderMiniMonth(state.yearView, month, cells)).join('')}
-      </div>
-      <div class="legend"><span><i style="background:var(--period)"></i>Registrado</span><span><i style="background:var(--predicted)"></i>Estimado</span></div>
-      <p class="small muted" style="margin-bottom:0">Las fechas futuras se recalculan cuando se añade un nuevo periodo.</p>
+
+    <article class="card year-card">
+      <div class="year-grid">${months.map(({ month, cells }) => renderMiniMonth(state.yearView, month, cells)).join('')}</div>
+      ${renderLegend()}
     </article>
-    <div class="section-title"><div><h2>Detalle mensual</h2></div><div class="actions"><button class="icon-btn" data-action="month-prev">←</button><button class="ghost-btn">${monthNames[state.calendarMonth]} ${state.calendarYear}</button><button class="icon-btn" data-action="month-next">→</button></div></div>
+
+    <div class="section-title">
+      <div><p class="section-kicker">Detalle</p><h2>${capitalize(monthNames[state.calendarMonth])} ${state.calendarYear}</h2></div>
+      <div class="segmented-control compact"><button class="icon-btn" data-action="month-prev">${icon('chevron-left')}</button><button class="icon-btn" data-action="month-next">${icon('chevron-right')}</button></div>
+    </div>
     ${renderMonthCard(state.calendarYear, state.calendarMonth)}`;
 }
 
 function renderRecordPage() {
   const sorted = [...state.periods].sort((a,b) => b.start_date.localeCompare(a.start_date));
   return `
-    <div class="section-title"><div><h2>Registrar periodo</h2><p>Añade el inicio y final de cada menstruación</p></div></div>
-    <section class="grid two">
-      <article class="card">
+    <div class="page-heading">
+      <div><p class="section-kicker">Seguimiento</p><h2>Registrar periodo</h2><p>Guarda las fechas reales para mejorar las próximas estimaciones.</p></div>
+    </div>
+
+    <section class="content-grid record-layout">
+      <article class="card sticky-card">
+        <div class="card-title-row"><div><p class="section-kicker">Nuevo registro</p><h3>Fechas del periodo</h3></div><span class="soft-icon">${icon('droplet')}</span></div>
         <form data-form="period" class="form-grid">
           <div class="field"><label>Primer día</label><input type="date" name="startDate" value="${toISODate(new Date())}" required /></div>
           <div class="field"><label>Último día</label><input type="date" name="endDate" value="${toISODate(addDays(new Date(), (state.settings?.typical_period_days || 5) - 1))}" required /></div>
-          <div class="field full"><button class="primary-btn" type="submit">Guardar periodo</button></div>
+          <div class="field full"><button class="primary-btn" type="submit">${icon('check')} Guardar periodo</button></div>
         </form>
-        <div class="notice" style="margin-top:16px">Puedes ajustar en Perfil cuántos días suele durar tu periodo. Ese dato se utiliza para dibujar las previsiones futuras.</div>
+        <div class="inline-tip">${icon('info')} Puedes ajustar la duración habitual desde Perfil.</div>
       </article>
+
       <article class="card">
-        <h3>Historial</h3>
-        ${sorted.length ? `<div class="list">${sorted.map(p => `<div class="list-item"><div class="meta"><strong>${formatDateEs(p.start_date,{short:true})} – ${formatDateEs(p.end_date || p.start_date,{short:true})}</strong><span>${periodDuration(p)} días</span></div><div class="actions"><button class="ghost-btn" data-action="edit-period" data-id="${p.id}">Editar</button><button class="danger-btn" data-action="delete-period" data-id="${p.id}">Eliminar</button></div></div>`).join('')}</div>` : '<div class="empty">Todavía no has registrado periodos.</div>'}
+        <div class="card-title-row"><div><p class="section-kicker">Historial</p><h3>Periodos registrados</h3></div><span class="soft-badge">${sorted.length}</span></div>
+        ${sorted.length ? `<div class="history-list">${sorted.map(p => `
+          <div class="history-item">
+            <span class="history-dot"></span>
+            <div class="history-copy"><strong>${formatDateEs(p.start_date,{short:true})} – ${formatDateEs(p.end_date || p.start_date,{short:true})}</strong><span>${periodDuration(p)} días</span></div>
+            <div class="row-actions"><button class="mini-btn" data-action="edit-period" data-id="${p.id}" aria-label="Editar">${icon('edit')}</button><button class="mini-btn danger" data-action="delete-period" data-id="${p.id}" aria-label="Eliminar">${icon('trash')}</button></div>
+          </div>`).join('')}</div>` : `<div class="empty-state"><span class="empty-icon">${icon('history')}</span><strong>Aún no hay registros</strong><p>Cuando añadas tu primer periodo aparecerá aquí.</p></div>`}
       </article>
     </section>`;
 }
 
 function renderWomanProfile() {
   return `
-    <div class="section-title"><div><h2>Ajustes del ciclo</h2><p>Personaliza Enma a tu ciclo</p></div></div>
-    <section class="grid two">
+    <div class="page-heading"><div><p class="section-kicker">Personalización</p><h2>Perfil y ajustes</h2><p>Adapta Enma a tu ciclo y gestiona el acceso de tu pareja.</p></div></div>
+
+    <section class="content-grid">
       <article class="card">
+        <div class="card-title-row"><div><p class="section-kicker">Mi ciclo</p><h3>Ajustes de cálculo</h3></div><span class="soft-icon">${icon('settings')}</span></div>
         <form data-form="settings" class="form-grid">
           <div class="field"><label>Días habituales de periodo</label><input type="number" name="typicalPeriodDays" min="1" max="15" value="${state.settings?.typical_period_days || 5}" required /></div>
           <div class="field"><label>Duración inicial del ciclo</label><input type="number" name="cycleLength" min="15" max="60" value="${state.settings?.default_cycle_length || 28}" required /></div>
-          <div class="field full"><label>Control de regularidad</label><select name="cycleMode"><option value="auto" ${state.settings?.cycle_mode === 'auto' ? 'selected' : ''}>Automático según mis registros</option><option value="regular" ${state.settings?.cycle_mode === 'regular' ? 'selected' : ''}>Regular</option><option value="irregular" ${state.settings?.cycle_mode === 'irregular' ? 'selected' : ''}>Irregular</option></select></div>
-          <div class="field full"><button class="primary-btn" type="submit">Guardar ajustes</button></div>
+          <div class="field full"><label>Regularidad</label><select name="cycleMode"><option value="auto" ${state.settings?.cycle_mode === 'auto' ? 'selected' : ''}>Automático según mis registros</option><option value="regular" ${state.settings?.cycle_mode === 'regular' ? 'selected' : ''}>Regular</option><option value="irregular" ${state.settings?.cycle_mode === 'irregular' ? 'selected' : ''}>Irregular</option></select></div>
+          <div class="field full"><button class="primary-btn" type="submit">Guardar cambios</button></div>
         </form>
-        <p class="small muted" style="margin-bottom:0">La duración inicial solo se usa cuando todavía no hay suficientes periodos para calcular una media propia.</p>
+        <p class="foot-note">La duración inicial se utiliza mientras todavía no haya suficientes periodos para calcular una media propia.</p>
       </article>
+
       <article class="card">
-        <h3>Pareja</h3>
-        ${state.partnership ? `<div class="notice">Tienes una pareja vinculada. Puede consultar el ciclo en modo lectura, pero no puede crear, editar ni eliminar tus registros.</div><div class="actions" style="margin-top:14px"><button class="danger-btn" data-action="unlink">Desvincular pareja</button></div>` : `
-          <p class="muted small">Genera un código temporal y compártelo únicamente con la persona que quieras vincular.</p>
-          ${state.pairCode ? `<div class="code-box">${state.pairCode}</div><p class="small muted">Caduca en 24 horas y solo puede utilizarse una vez.</p>` : '<div class="empty">Aún no has generado un código.</div>'}
-          <button class="primary-btn" data-action="create-pair-code">Generar código de pareja</button>`}
+        <div class="card-title-row"><div><p class="section-kicker">Compartir</p><h3>Pareja</h3></div><span class="soft-icon">${icon('heart')}</span></div>
+        ${state.partnership ? `
+          <div class="success-panel">${icon('check')}<div><strong>Pareja vinculada</strong><p>Puede consultar el ciclo en modo lectura, pero no modificar tus datos.</p></div></div>
+          <button class="secondary-btn danger-text" data-action="unlink">Desvincular pareja</button>` : `
+          <p class="muted">Genera un código temporal y compártelo solo con la persona que quieras vincular.</p>
+          ${state.pairCode ? `<div class="pair-code"><small>Código de vinculación</small><strong>${state.pairCode}</strong><span>Caduca en 24 horas · un solo uso</span></div>` : '<div class="inline-tip">Aún no has generado ningún código.</div>'}
+          <button class="primary-btn" data-action="create-pair-code">${icon('link')} Generar código de pareja</button>`}
       </article>
     </section>
-    <div class="section-title"><div><h2>Privacidad</h2></div></div>
-    <article class="card"><div class="notice">El acceso de pareja es revocable. En la base de datos, el usuario hombre solo tiene permiso de lectura sobre el perfil, ajustes y periodos de la mujer con la que esté vinculado.</div></article>`;
+
+    ${renderSessionCard()}
+
+    <article class="privacy-strip">${icon('shield')}<div><strong>Privacidad por diseño</strong><p>El acceso de pareja es revocable y está limitado a lectura sobre los datos autorizados.</p></div></article>`;
 }
 
 function renderManProfile() {
   return `
-    <div class="section-title"><div><h2>Pareja vinculada</h2><p>Acceso de solo lectura</p></div></div>
-    <section class="grid two">
-      <article class="card"><h3>${escapeHtml(state.partnerProfile?.full_name || 'Pareja')}</h3><p class="muted">Puedes ver su calendario y la próxima fecha estimada. No puedes modificar ningún dato del ciclo.</p>${isNativeAndroid() ? '<button class="primary-btn" data-action="pin-widget">Añadir widget a inicio</button>' : ''}</article>
-      <article class="card"><h3>Desvincular</h3><p class="muted small">Al desvincularos dejarás de poder acceder inmediatamente a sus datos.</p><button class="danger-btn" data-action="unlink">Desvincular pareja</button></article>
-    </section>`;
+    <div class="page-heading"><div><p class="section-kicker">Vinculación</p><h2>Pareja</h2><p>Consulta el ciclo compartido y gestiona tu sesión.</p></div></div>
+
+    <section class="content-grid">
+      <article class="card partner-card">
+        <div class="partner-avatar">${escapeHtml((state.partnerProfile?.full_name || 'E').charAt(0).toUpperCase())}</div>
+        <div><p class="section-kicker">Pareja vinculada</p><h3>${escapeHtml(state.partnerProfile?.full_name || 'Pareja')}</h3><p class="muted">Puedes ver su calendario y próxima fecha estimada en modo de solo lectura.</p></div>
+        ${isNativeAndroid() ? `<button class="primary-btn" data-action="pin-widget">${icon('widget')} Añadir widget 3×1</button>` : ''}
+      </article>
+      <article class="card">
+        <div class="card-title-row"><div><p class="section-kicker">Acceso</p><h3>Desvincular</h3></div><span class="soft-icon">${icon('unlink')}</span></div>
+        <p class="muted">Al desvincular la pareja dejarás de poder consultar sus datos inmediatamente.</p>
+        <button class="secondary-btn danger-text" data-action="unlink">Desvincular pareja</button>
+      </article>
+    </section>
+
+    ${renderSessionCard()}`;
+}
+
+function renderSessionCard() {
+  return `
+    <div class="section-title"><div><p class="section-kicker">Acceso</p><h2>Sesión</h2></div></div>
+    <article class="card session-card">
+      <div class="session-icon">${icon('lock')}</div>
+      <div class="session-copy"><strong>Mantener sesión iniciada</strong><p>Si está activado, Enma seguirá abierta aunque cierres la app o el navegador.</p></div>
+      <button class="switch ${state.rememberSession ? 'on' : ''}" data-action="toggle-remember" role="switch" aria-checked="${state.rememberSession}"><span></span></button>
+    </article>`;
 }
 
 function renderUnpairedMan() {
   root.innerHTML = `
-    <main class="shell"><div class="container">${renderTopbar()}${renderMessage()}
-      <section class="card" style="max-width:620px;margin:60px auto">
-        <div class="eyebrow" style="color:var(--muted)">Cuenta de pareja</div>
+    <main class="app-shell"><div class="app-container">
+      ${renderTopbar()}${renderMessage()}
+      <section class="linking-card card">
+        <span class="linking-icon">${icon('heart')}</span>
+        <p class="section-kicker">Cuenta de pareja</p>
         <h2>Vincula tu cuenta con Enma</h2>
-        <p class="muted">Pide a tu pareja que genere un código desde Perfil → Pareja. El código es temporal y de un solo uso.</p>
-        <form data-form="claim-pair" class="form-grid">
-          <div class="field full"><label>Código de pareja</label><input name="code" maxlength="8" minlength="6" required placeholder="Ej. A4C9F2" style="text-transform:uppercase;letter-spacing:.12em" /></div>
-          <div class="field full"><button class="primary-btn" type="submit">Vincular pareja</button></div>
+        <p class="muted">Pide a tu pareja que genere un código desde Perfil → Pareja. El código dura 24 horas y solo puede usarse una vez.</p>
+        <form data-form="claim-pair" class="claim-form">
+          <div class="field"><label>Código de pareja</label><input name="code" maxlength="8" minlength="6" required placeholder="A4C9F2" class="pair-input" /></div>
+          <button class="primary-btn large" type="submit">${icon('link')} Vincular pareja</button>
         </form>
+        ${renderSessionCard()}
       </section>
     </div></main>`;
 }
@@ -368,14 +488,18 @@ function renderUnpairedMan() {
 function renderMonthCard(year, month) {
   const cells = monthCells(year, month, state.periods, state.settings || {});
   return `<article class="card calendar-card">
-    <div class="month-head"><h3>${monthNames[month]} ${year}</h3></div>
+    <div class="month-head"><div><p class="section-kicker">Calendario</p><h3>${capitalize(monthNames[month])} ${year}</h3></div></div>
     <div class="calendar-grid">${weekdays.map(w => `<div class="weekday">${w}</div>`).join('')}${cells.map(renderDay).join('')}</div>
-    <div class="legend"><span><i style="background:var(--period)"></i>Registrado</span><span><i style="background:var(--predicted)"></i>Estimado</span></div>
+    ${renderLegend()}
   </article>`;
 }
 
 function renderMiniMonth(year, month, cells) {
-  return `<div class="mini-month"><h4>${monthNames[month]}</h4><div class="calendar-grid">${weekdays.map(w => `<div class="weekday">${w}</div>`).join('')}${cells.map(renderDay).join('')}</div></div>`;
+  return `<div class="mini-month"><h4>${capitalize(monthNames[month])}</h4><div class="calendar-grid">${weekdays.map(w => `<div class="weekday">${w}</div>`).join('')}${cells.map(renderDay).join('')}</div></div>`;
+}
+
+function renderLegend() {
+  return `<div class="legend"><span><i class="recorded-dot"></i>Registrado</span><span><i class="predicted-dot"></i>Estimado</span></div>`;
 }
 
 function renderDay(cell) {
@@ -392,26 +516,41 @@ function renderModal() {
     const item = state.modal.period;
     const start = item?.start_date || toISODate(new Date());
     const end = item?.end_date || toISODate(addDays(parseDate(start), (state.settings?.typical_period_days || 5) - 1));
-    return `<div class="modal-backdrop" data-action="close-modal"><div class="modal" data-modal-stop><h3>${item ? 'Editar periodo' : 'Registrar periodo'}</h3><form data-form="modal-period" class="form-grid"><input type="hidden" name="id" value="${item?.id || ''}" /><div class="field"><label>Primer día</label><input type="date" name="startDate" value="${start}" required /></div><div class="field"><label>Último día</label><input type="date" name="endDate" value="${end}" required /></div><div class="field full actions"><button class="primary-btn" type="submit">Guardar</button><button class="ghost-btn" type="button" data-action="close-modal">Cancelar</button></div></form></div></div>`;
+    return `<div class="modal-backdrop" data-action="close-modal"><div class="modal" data-modal-stop>
+      <div class="modal-head"><div><p class="section-kicker">Periodo</p><h3>${item ? 'Editar registro' : 'Registrar periodo'}</h3></div><button class="icon-btn" type="button" data-action="close-modal">${icon('close')}</button></div>
+      <form data-form="modal-period" class="form-grid">
+        <input type="hidden" name="id" value="${item?.id || ''}" />
+        <div class="field"><label>Primer día</label><input type="date" name="startDate" value="${start}" required /></div>
+        <div class="field"><label>Último día</label><input type="date" name="endDate" value="${end}" required /></div>
+        <div class="field full modal-actions"><button class="primary-btn" type="submit">Guardar</button><button class="secondary-btn" type="button" data-action="close-modal">Cancelar</button></div>
+      </form>
+    </div></div>`;
   }
   return '';
 }
 
 function renderMessage() {
   if (!state.message) return '';
-  return `<div class="${state.message.type === 'success' ? 'success' : 'error'}" style="margin-bottom:14px">${escapeHtml(state.message.text)}</div>`;
+  return `<div class="message ${state.message.type === 'success' ? 'success' : 'error'}"><span>${icon(state.message.type === 'success' ? 'check' : 'alert')}</span><p>${escapeHtml(state.message.text)}</p></div>`;
 }
 
 async function handleClick(event) {
-  const modalInner = event.target.closest('[data-modal-stop]');
-  if (modalInner && event.target === modalInner) return;
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const action = button.dataset.action;
 
   if (action === 'auth-mode') { state.authMode = button.dataset.mode; state.message = null; return render(); }
   if (action === 'role') { state.authRole = button.dataset.role; return render(); }
-  if (action === 'logout') { await signOut(); return; }
+  if (action === 'logout') {
+    sessionStorage.removeItem(SESSION_TAB_KEY);
+    await signOut();
+    return;
+  }
+  if (action === 'toggle-remember') {
+    setRememberPreference(!state.rememberSession);
+    state.message = { type:'success', text: state.rememberSession ? 'La sesión permanecerá iniciada.' : 'La sesión se cerrará al terminar esta sesión del navegador o la app.' };
+    return render();
+  }
   if (action === 'view') { state.view = button.dataset.view; return render(); }
   if (action === 'year-prev') { state.yearView -= 1; return render(); }
   if (action === 'year-next') { state.yearView += 1; return render(); }
@@ -440,10 +579,12 @@ async function handleSubmit(event) {
       if (state.authMode === 'signup') {
         const result = await signUp({ ...payload, fullName: data.get('fullName'), role: state.authRole });
         if (result.error) throw result.error;
-        if (!result.data.session) state.message = { type:'success', text:'Cuenta creada. Revisa tu correo para confirmar el acceso.' };
+        if (!result.data.session) state.message = { type:'success', text:'Cuenta creada. Si tu proyecto exige confirmación, revisa la configuración de Supabase Auth.' };
       } else {
+        const remember = data.get('remember') === 'on';
         const result = await signIn(payload);
         if (result.error) throw result.error;
+        setRememberPreference(remember);
       }
     }
 
@@ -536,7 +677,7 @@ async function pinWidget() {
 async function syncWidget() {
   if (!isNativeAndroid()) return;
   if (state.profile?.role === 'man' && !state.partnership) {
-    await updateAndroidWidget({ title:'Enma', daysRemaining:'—', nextDate:'Sin pareja vinculada', personName:'', status:'Vincula tu cuenta en Enma' });
+    await updateAndroidWidget({ title:'Enma', daysRemaining:'—', nextDate:'Sin pareja', personName:'Enma', status:'Vincula tu cuenta' });
     return;
   }
   const next = getNextPeriod(state.periods, state.settings || {});
@@ -544,10 +685,21 @@ async function syncWidget() {
   await updateAndroidWidget({
     title: 'Enma',
     personName,
-    daysRemaining: next ? String(Math.max(0, next.daysRemaining)) : '—',
+    daysRemaining: next ? String(next.daysRemaining >= 0 ? next.daysRemaining : next.overdueDays) : '—',
     nextDate: next ? formatDateEs(next.date,{short:true}) : 'Sin datos',
-    status: next ? (next.daysRemaining < 0 ? `${next.overdueDays} días sobre la estimación` : next.daysRemaining === 0 ? 'Fecha estimada: hoy' : 'Hasta la próxima regla estimada') : 'Registra un periodo para calcularla'
+    status: next ? (next.daysRemaining < 0 ? 'Sobre la estimación' : next.daysRemaining === 0 ? 'Estimación: hoy' : 'Próxima regla') : 'Sin registros'
   });
+}
+
+function setRememberPreference(value) {
+  state.rememberSession = Boolean(value);
+  localStorage.setItem(REMEMBER_KEY, state.rememberSession ? 'true' : 'false');
+  if (state.rememberSession) sessionStorage.removeItem(SESSION_TAB_KEY);
+  else sessionStorage.setItem(SESSION_TAB_KEY, '1');
+}
+
+function readRememberPreference() {
+  return localStorage.getItem(REMEMBER_KEY) !== 'false';
 }
 
 function shiftMonth(delta) {
@@ -576,13 +728,50 @@ function friendlyError(error) {
   if (message.includes('Invalid login credentials')) return 'Email o contraseña incorrectos.';
   if (message.includes('User already registered')) return 'Ya existe una cuenta con ese email.';
   if (message.includes('Password should be')) return 'La contraseña no cumple los requisitos mínimos.';
+  if (message.toLowerCase().includes('email rate limit exceeded')) return 'Supabase ha limitado temporalmente los registros por email. Puedes entrar con un usuario ya creado o revisar Auth en Supabase.';
   if (message.includes('pairing code') || message.includes('Código')) return message;
   if (message.includes('duplicate key')) return 'Ese registro ya existe.';
   return message;
 }
 
+function capitalize(value) {
+  const text = String(value || '');
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : '';
+}
+
 function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>'"]/g, (ch) => ({ '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;' }[ch]));
+  return String(value ?? '').replace(/[&<>'\"]/g, (ch) => ({ '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;' }[ch]));
+}
+
+function icon(name) {
+  const paths = {
+    home: '<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10.5V20h13v-9.5"/><path d="M9.5 20v-6h5v6"/>',
+    calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>',
+    heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/>',
+    activity: '<path d="M3 12h4l2-6 4 12 2-6h6"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    droplet: '<path d="M12 2.5S5.5 10 5.5 15a6.5 6.5 0 0 0 13 0C18.5 10 12 2.5 12 2.5Z"/>',
+    history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>',
+    widget: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M8 9h8M8 13h5"/>',
+    check: '<path d="m5 12 4 4L19 6"/>',
+    alert: '<path d="M12 3 2.7 20h18.6L12 3Z"/><path d="M12 9v4M12 17h.01"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+    edit: '<path d="M12 20h9"/><path d="m16.5 3.5 4 4L8 20l-5 1 1-5L16.5 3.5Z"/>',
+    trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14"/>',
+    link: '<path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/>',
+    unlink: '<path d="m3 3 18 18"/><path d="M10.6 13.4a5 5 0 0 0 6.5-.3l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M13.4 10.6a5 5 0 0 0-6.5.3l-2 2A5 5 0 0 0 12 20l1.1-1.1"/>',
+    shield: '<path d="M12 3 4.5 6v5.5c0 4.8 3 7.6 7.5 9.5 4.5-1.9 7.5-4.7 7.5-9.5V6L12 3Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/>',
+    lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+    logout: '<path d="M10 17l5-5-5-5M15 12H3"/><path d="M14 4h5a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-5"/>',
+    arrow: '<path d="M5 12h14M14 7l5 5-5 5"/>',
+    'chevron-left': '<path d="m15 18-6-6 6-6"/>',
+    'chevron-right': '<path d="m9 18 6-6-6-6"/>',
+    close: '<path d="M6 6l12 12M18 6 6 18"/>'
+  };
+  return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name] || paths.info}</svg>`;
 }
 
 function registerServiceWorker() {
